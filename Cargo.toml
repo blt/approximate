@@ -1,0 +1,6 @@
+[package]
+name = "approximate"
+version = "0.1.0"
+authors = ["Brian L. Troutwine <brian@troutwine.us>"]
+
+[dependencies]
