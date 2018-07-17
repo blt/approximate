@@ -17,13 +17,20 @@
 //! The structures in this crate refer to their research and are property tested
 //! according to whatever the inventors could prove about the structures.
 
-#![deny(warnings)]
-#![deny(bad_style)]
-#![deny(future_incompatible)]
-#![deny(nonstandard_style)]
-#![deny(rust_2018_compatibility)]
-#![deny(rust_2018_idioms)]
-#![deny(unused)]
+extern crate bitvec;
+extern crate rand;
+extern crate twox_hash;
+
+#[cfg(test)]
+extern crate quickcheck;
+
+#[deny(warnings)]
+#[deny(bad_style)]
+#[deny(future_incompatible)]
+#[deny(nonstandard_style)]
+#[deny(rust_2018_compatibility)]
+#[deny(rust_2018_idioms)]
+#[deny(unused)]
 #[cfg_attr(feature = "cargo-clippy", deny(clippy))]
 #[cfg_attr(feature = "cargo-clippy", deny(clippy_pedantic))]
 #[cfg_attr(feature = "cargo-clippy", deny(clippy_perf))]
@@ -32,11 +39,3 @@
 #[cfg_attr(feature = "cargo-clippy", deny(clippy_correctness))]
 #[cfg_attr(feature = "cargo-clippy", deny(clippy_cargo))]
 pub mod filters;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}

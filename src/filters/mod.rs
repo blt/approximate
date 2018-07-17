@@ -1,1 +1,3 @@
 //! # filters
+
+pub mod bloom;
