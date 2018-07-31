@@ -72,7 +72,6 @@ where
             data.push(false);
         }
         assert_eq!(capacity, data.len());
-        println!("CAPACITY: {:?} | FACTORS: {:?}", capacity, factors);
 
         Bloom {
             hash_builder: RandomXxHashBuilder::default(),
@@ -144,9 +143,9 @@ where
             .iter()
             .map(|x| x.wrapping_mul(base) % cap)
         {
-            println!("HERE I START: {:?} | {:?} | {:?}", base, idx, cap);
-            member |= self.data.get(idx as usize);
-            println!("MEMBER: {:?}", member);
+            // TODO(blt) -- This is not correct, I don't think. 'member' should
+            // only be true if ALL bits are 1, not just a single on of them.
+            member &= self.data.get(idx as usize);
             self.data.set(idx as usize, true);
         }
         member
@@ -163,7 +162,7 @@ where
             .iter()
             .map(|x| x.wrapping_mul(base) % cap)
         {
-            member |= self.data.get(idx as usize);
+            member &= self.data.get(idx as usize);
         }
         member
     }
@@ -181,7 +180,7 @@ where
 
 // Properties
 
-// - On insertion to a fresh Bloom there should only be
+// - On insertion to a fresh Bloom there should only be up to
 //   multiplicative_factors.len() worth bits lit up
 
 // - No false negatives, only false positives
@@ -193,25 +192,24 @@ mod test {
     use super::*;
     use quickcheck::{QuickCheck, TestResult};
 
+    // Here we determine that after an insertion there is at least 1 bit lit in
+    // the underlying byte array and no more than factors.len().
+    //
+    // No claim can be made on whether an insertion will return a false positive
+    // or not, even if that insertion is the first into the set. That is on
+    // account of one of the 'factor' hashes available may map to the same
+    // underlying bit.
     #[test]
-    pub fn explicit_factors_total_lit() {
-        let capacity = 1;
-        let entry = 0;
-        let mut bloom = Bloom::with_capacity_and_factors(capacity, vec![0, 1, 3]);
-        // After many inserts we may have a false positive result here. The
-        // first insertion into the bloom filter is the only one we can be
-        // sure will be totally accurate.
-        assert_eq!(false, bloom.insert(&entry));
-        assert_eq!(4, bloom.total_factors());
-    }
-
-    #[test]
-    pub fn factors_total_lit() {
-        fn inner(capacity: usize, entry: u16, mut factors: Vec<u64>) -> TestResult {
+    pub fn lit_interior_bits_inequality() {
+        fn inner(capacity: usize, entries: Vec<u16>, mut factors: Vec<u64>) -> TestResult {
             factors.sort();
             factors.dedup();
-            for fct in factors {
-                if is_nonzero_even(fct) {
+            let factors_len = factors.len();
+            if factors.is_empty() {
+                return TestResult::discard();
+            }
+            for fct in &factors {
+                if is_nonzero_even(*fct) {
                     return TestResult::discard();
                 }
             }
@@ -219,15 +217,17 @@ mod test {
             if capacity == 0 {
                 return TestResult::discard();
             }
-            let mut bloom = Bloom::with_capacity(capacity);
-            // After many inserts we may have a false positive result here. The
-            // first insertion into the bloom filter is the only one we can be
-            // sure will be totally accurate.
-            assert_eq!(false, bloom.insert(&entry));
-            assert_eq!(4, bloom.total_factors());
+            let mut bloom = Bloom::with_capacity_and_factors(capacity, factors);
+            let mut entries_inserted = 0;
+            for entry in entries {
+                bloom.insert(&entry);
+                entries_inserted += 1;
+                assert!(bloom.total_factors() <= entries_inserted * factors_len);
+                assert!(bloom.total_factors() >= 1);
+            }
 
             TestResult::passed()
         }
-        QuickCheck::new().quickcheck(inner as fn(usize, u16, Vec<u64>) -> TestResult);
+        QuickCheck::new().quickcheck(inner as fn(usize, Vec<u16>, Vec<u64>) -> TestResult);
     }
 }
