@@ -13,7 +13,7 @@ pub enum Error {
     /// bound for the number of hash functions demanded.
     InsufficientCapacity,
     /// Error guard out of bounds, must be > 0.0 and < 1.0
-    ErrorGuardOutOfBounds,
+    GuardOutOfBounds,
     /// When supplying hash factors the vector must not be empty
     HashFactorsEmpty,
 }
@@ -31,13 +31,13 @@ where
     // Filters" by Bonomi et al.
     capacity: usize,
     len: usize,
-    hash_factors: Vec<u64>,
+    hash_factors: Vec<usize>,
     data: BitVec<BigEndian, u8>,
     phantom: PhantomData<K>,
 }
 
 #[inline]
-fn is_nonzero_even(x: u64) -> bool {
+fn is_nonzero_even(x: usize) -> bool {
     if x == 0 {
         false
     } else {
@@ -46,36 +46,34 @@ fn is_nonzero_even(x: u64) -> bool {
 }
 
 #[inline]
-fn capacity(bytes: usize, error_bound: f64, total_hashes: usize) -> usize {
+fn capacity(bytes: usize, error_bound: f64, total_hashes: u16) -> usize {
     let bytes = bytes as f64;
-    let total_hashes = total_hashes as f64;
-    -((bytes * (1.0 - error_bound.powf(1.0 / total_hashes)).ln()) / total_hashes) as usize
+    let total_hashes = f64::from(total_hashes);
+    let res = -((bytes * (1.0 - error_bound.powf(1.0 / total_hashes)).ln()) / total_hashes);
+    assert!(!res.is_sign_negative());
+    res as usize
 }
 
 impl<K> Bloom<K, RandomXxHashBuilder>
 where
     K: Hash + Eq,
 {
-    pub fn new(
-        bytes: usize,
-        error_bound: f64,
-        total_hashes: usize,
-    ) -> Result<Bloom<K, RandomXxHashBuilder>, Error> {
+    pub fn new(bytes: usize, error_bound: f64, total_hashes: u16) -> Result<Self, Error> {
         let max_capacity = capacity(bytes, error_bound, total_hashes);
         if max_capacity == 0 {
             return Err(Error::InsufficientCapacity);
         }
-        let mut hash_factors: Vec<u64> = Vec::with_capacity(total_hashes);
+        let mut hash_factors: Vec<usize> = Vec::with_capacity(total_hashes as usize);
 
         // We populate hash_factors with random factors, taking care to make
         // sure they do not overlap and are odd. The oddness decreases the
         // likelyhood that we will hash to the same bits. Doesn't eliminate it,
         // mind, just makes it less likely.
-        let range = Uniform::from(0..u64::max_value());
+        let range = Uniform::from(0..usize::max_value());
         let mut rng = thread_rng();
-        let capacity = (total_hashes * 2) * max_capacity; // total_factors * 2 because we only pick odds
-        while hash_factors.len() < total_hashes {
-            let fct = range.sample(&mut rng) % (capacity as u64);
+        let capacity = (total_hashes as usize * 2) * max_capacity; // total_factors * 2 because we only pick odds
+        while hash_factors.len() < total_hashes as usize {
+            let fct = range.sample(&mut rng) % capacity;
             if !is_nonzero_even(fct) {
                 continue;
             }
@@ -83,23 +81,24 @@ where
                 hash_factors.push(fct)
             }
         }
-        Bloom::new_with_hash_factors(bytes, error_bound, hash_factors)
+        Self::new_with_hash_factors(bytes, error_bound, hash_factors)
     }
 
     pub fn new_with_hash_factors(
         bytes: usize,
         error_bound: f64,
-        hash_factors: Vec<u64>,
-    ) -> Result<Bloom<K, RandomXxHashBuilder>, Error> {
+        hash_factors: Vec<usize>,
+    ) -> Result<Self, Error> {
         if hash_factors.is_empty() {
             return Err(Error::HashFactorsEmpty);
         }
         if (error_bound >= 0.0) || (error_bound <= 1.0) {
-            return Err(Error::ErrorGuardOutOfBounds);
+            return Err(Error::GuardOutOfBounds);
         }
 
         let total_hashes = hash_factors.len();
-        let max_capacity = capacity(bytes, error_bound, total_hashes);
+        assert!(total_hashes <= u16::max_value() as usize);
+        let max_capacity = capacity(bytes, error_bound, total_hashes as u16);
         assert!(max_capacity != 0);
         for fct in &hash_factors {
             assert!(is_nonzero_even(*fct))
@@ -111,12 +110,12 @@ where
         }
         assert_eq!(capacity, data.len());
 
-        Ok(Bloom {
+        Ok(Self {
             hash_builder: RandomXxHashBuilder::default(),
             data,
             capacity,
             len: 0,
-            hash_factors: hash_factors,
+            hash_factors,
             phantom: PhantomData,
         })
     }
@@ -130,18 +129,19 @@ where
     pub fn new_with_hash_factors_and_hasher(
         bytes: usize,
         error_bound: f64,
-        hash_factors: Vec<u64>,
+        hash_factors: Vec<usize>,
         hash_builder: S,
-    ) -> Result<Bloom<K, S>, Error> {
+    ) -> Result<Self, Error> {
         if hash_factors.is_empty() {
             return Err(Error::HashFactorsEmpty);
         }
         if (error_bound >= 0.0) || (error_bound <= 1.0) {
-            return Err(Error::ErrorGuardOutOfBounds);
+            return Err(Error::GuardOutOfBounds);
         }
 
         let total_hashes = hash_factors.len();
-        let max_capacity = capacity(bytes, error_bound, total_hashes);
+        assert!(total_hashes <= u16::max_value() as usize);
+        let max_capacity = capacity(bytes, error_bound, total_hashes as u16);
         for fct in &hash_factors {
             assert!(!is_nonzero_even(*fct))
         }
@@ -152,12 +152,12 @@ where
         }
         assert_eq!(capacity, data.len());
 
-        Ok(Bloom {
+        Ok(Self {
             hash_builder,
             data,
             capacity,
             len: 0,
-            hash_factors: hash_factors,
+            hash_factors,
             phantom: PhantomData,
         })
     }
@@ -170,12 +170,16 @@ where
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn insert(&mut self, key: &K) -> bool {
         let mut hasher = self.hash_builder.build_hasher();
         key.hash(&mut hasher);
-        let base = hasher.finish();
+        let base = hasher.finish() as usize;
         let mut member = false;
-        let cap = self.capacity as u64;
+        let cap = self.capacity;
         for idx in self.hash_factors.iter().map(|x| x.wrapping_mul(base) % cap) {
             member &= self.data.get(idx as usize);
             self.data.set(idx as usize, true);
@@ -191,8 +195,11 @@ where
         key.hash(&mut hasher);
         let base = hasher.finish();
         let mut member = false;
-        let cap = self.capacity as u64;
-        for idx in self.hash_factors.iter().map(|x| x.wrapping_mul(base) % cap) {
+        for idx in self
+            .hash_factors
+            .iter()
+            .map(|x| x.wrapping_mul(base as usize) % self.capacity)
+        {
             member &= self.data.get(idx as usize);
         }
         member
@@ -224,7 +231,7 @@ mod test {
             bytes: usize,
             error_bound: f64,
             entries: Vec<u16>,
-            mut factors: Vec<u64>,
+            mut factors: Vec<usize>,
         ) -> TestResult {
             factors.sort();
             factors.dedup();
@@ -254,7 +261,7 @@ mod test {
 
             TestResult::passed()
         }
-        QuickCheck::new().quickcheck(inner as fn(usize, f64, Vec<u16>, Vec<u64>) -> TestResult);
+        QuickCheck::new().quickcheck(inner as fn(usize, f64, Vec<u16>, Vec<usize>) -> TestResult);
     }
 
     // Here we determine that after an insertion there is at least 1 bit lit in
@@ -270,7 +277,7 @@ mod test {
             bytes: usize,
             error_bound: f64,
             entries: Vec<u16>,
-            mut factors: Vec<u64>,
+            mut factors: Vec<usize>,
         ) -> TestResult {
             factors.sort();
             factors.dedup();
@@ -302,7 +309,7 @@ mod test {
 
             TestResult::passed()
         }
-        QuickCheck::new().quickcheck(inner as fn(usize, f64, Vec<u16>, Vec<u64>) -> TestResult);
+        QuickCheck::new().quickcheck(inner as fn(usize, f64, Vec<u16>, Vec<usize>) -> TestResult);
     }
 
     // Here we determine that 'len' is always the same as the `entries.len`
@@ -313,7 +320,7 @@ mod test {
             bytes: usize,
             error_bound: f64,
             entries: Vec<u16>,
-            mut factors: Vec<u64>,
+            mut factors: Vec<usize>,
         ) -> TestResult {
             factors.sort();
             factors.dedup();
@@ -341,6 +348,6 @@ mod test {
 
             TestResult::passed()
         }
-        QuickCheck::new().quickcheck(inner as fn(usize, f64, Vec<u16>, Vec<u64>) -> TestResult);
+        QuickCheck::new().quickcheck(inner as fn(usize, f64, Vec<u16>, Vec<usize>) -> TestResult);
     }
 }

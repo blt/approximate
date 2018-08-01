@@ -33,6 +33,17 @@ extern crate quickcheck;
 #[deny(unused)]
 #[cfg_attr(feature = "cargo-clippy", deny(clippy))]
 #[cfg_attr(feature = "cargo-clippy", deny(clippy_pedantic))]
+// We allow possible truncation as there's an awful lot of casting needed for
+// some the data structures in this crate. I would prefer to go full-pedantic
+// but I'm not sure what alternative approach will be needed.
+#[cfg_attr(
+    feature = "cargo-clippy",
+    allow(
+        cast_possible_truncation,
+        cast_precision_loss,
+        cast_sign_loss
+    )
+)]
 #[cfg_attr(feature = "cargo-clippy", deny(clippy_perf))]
 #[cfg_attr(feature = "cargo-clippy", deny(clippy_style))]
 #[cfg_attr(feature = "cargo-clippy", deny(clippy_complexity))]
