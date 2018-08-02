@@ -73,6 +73,8 @@ fn is_even(x: usize) -> bool {
     (x % 2) == 0
 }
 
+/// Calculate the number of elements to fit in `bytes` with guaranteed error
+/// bound, for supplied number of hashes.
 #[inline]
 fn capacity(bytes: usize, error_bound: f64, total_hashes: u16) -> Option<usize> {
     let bytes = bytes as f64;
@@ -82,6 +84,16 @@ fn capacity(bytes: usize, error_bound: f64, total_hashes: u16) -> Option<usize> 
         None
     } else {
         Some(res as usize)
+    }
+}
+
+/// Return the optimal number of hashes for the given error, per Chang et al 2005.
+#[inline]
+fn optimal_hashes(error_bound: f64) -> Option<u16> {
+    if !((error_bound > 0.0) && (error_bound < 1.0)) {
+        return None;
+    } else {
+        Some((-error_bound.log2()).ceil() as u16)
     }
 }
 
@@ -132,16 +144,17 @@ where
     /// ```
     /// use approximate::filters::bloom::original::Bloom;
     ///
-    /// let too_small_bloom = Bloom::<u16, _>::new(1, 0.0001, 10);
+    /// let too_small_bloom = Bloom::<u16, _>::new(1, 0.0001);
     /// assert!(too_small_bloom.is_err());
     ///
-    /// let bloom = Bloom::<u16, _>::new(100_000, 0.0001, 10);
+    /// let bloom = Bloom::<u16, _>::new(100_000, 0.0001);
     /// assert!(bloom.is_ok())
     /// ```
-    pub fn new(bytes: usize, error_bound: f64, total_hashes: u16) -> Result<Self, BuildError> {
+    pub fn new(bytes: usize, error_bound: f64) -> Result<Self, BuildError> {
         if bytes == 0 {
             return Err(BuildError::InsufficientCapacity);
         }
+        let total_hashes = optimal_hashes(error_bound).unwrap_or(0);
         let max_capacity = capacity(bytes, error_bound, total_hashes);
         if max_capacity.is_none() {
             return Err(BuildError::InsufficientCapacity);
@@ -158,7 +171,7 @@ where
         // mind, just makes it less likely.
         let range = Uniform::from(0..usize::max_value());
         let mut rng = thread_rng();
-        let capacity = (total_hashes as usize * 2) * max_capacity; // total_factors * 2 because we only pick odds
+        let capacity = (total_hashes as usize * 2) * max_capacity;
         while hash_factors.len() < total_hashes as usize {
             let fct = range.sample(&mut rng) % capacity;
             if is_even(fct) {
@@ -180,11 +193,11 @@ where
         if bytes == 0 {
             return Err(BuildError::InsufficientCapacity);
         }
-        if hash_factors.is_empty() {
-            return Err(BuildError::HashFactorsEmpty);
-        }
         if !((error_bound > 0.0) && (error_bound < 1.0)) {
             return Err(BuildError::GuardOutOfBounds);
+        }
+        if hash_factors.is_empty() {
+            return Err(BuildError::HashFactorsEmpty);
         }
 
         let total_hashes = hash_factors.len();
@@ -204,7 +217,7 @@ where
                 return Err(BuildError::HashFactorsZeroOrEven);
             }
         }
-        let capacity = (total_hashes * 2) * max_capacity; // total_factors * 2 because we only pick odds
+        let capacity = (total_hashes * 2) * max_capacity;
         assert!(capacity != 0);
         let mut data = BitVec::with_capacity(max_capacity);
         for _ in 0..capacity {
@@ -265,7 +278,7 @@ where
                 return Err(BuildError::HashFactorsZeroOrEven);
             }
         }
-        let capacity = (total_hashes * 2) * max_capacity; // total_factors * 2 because we only pick odds
+        let capacity = (total_hashes * 2) * max_capacity;
         assert!(capacity != 0);
         let mut data = BitVec::with_capacity(max_capacity);
         for _ in 0..capacity {
@@ -292,8 +305,8 @@ where
     /// ```
     /// use approximate::filters::bloom::original::Bloom;
     ///
-    /// let bloom = Bloom::<u16, _>::new(32_000, 0.1, 2).unwrap();
-    /// assert_eq!(24_328, bloom.capacity());
+    /// let bloom = Bloom::<u16, _>::new(32_000, 0.1).unwrap();
+    /// assert_eq!(52_880, bloom.capacity());
     /// ```
     pub fn capacity(&self) -> usize {
         self.capacity
@@ -307,7 +320,7 @@ where
     /// ```
     /// use approximate::filters::bloom::original::Bloom;
     ///
-    /// let mut bloom = Bloom::<u16, _>::new(32_000, 0.1, 2).unwrap();
+    /// let mut bloom = Bloom::<u16, _>::new(32_000, 0.1).unwrap();
     /// assert_eq!(bloom.len(), 0);
     /// let _ = bloom.insert(&0001);
     /// let _ = bloom.insert(&0010);
@@ -327,7 +340,7 @@ where
     /// ```
     /// use approximate::filters::bloom::original::Bloom;
     ///
-    /// let mut bloom = Bloom::<u16, _>::new(32_000, 0.1, 2).unwrap();
+    /// let mut bloom = Bloom::<u16, _>::new(32_000, 0.1).unwrap();
     /// assert_eq!(bloom.len(), 0);
     /// assert!(bloom.is_empty());
     ///
@@ -355,15 +368,26 @@ where
     /// ```
     /// use approximate::filters::bloom::original::Bloom;
     ///
-    /// let mut bloom = Bloom::<u16, _>::new(64, 0.001, 2).unwrap();
-    /// assert_eq!(bloom.capacity(), 4);
+    /// let mut bloom = Bloom::<u16, _>::new(8, 0.1).unwrap();
+    /// assert_eq!(bloom.capacity(), 8);
     /// assert!(bloom.insert(&0001).is_ok());
     /// assert!(bloom.insert(&0010).is_ok());
+    /// assert!(bloom.insert(&0011).is_ok());
+    /// assert!(bloom.insert(&0010).is_ok());
+    /// assert!(bloom.insert(&0110).is_ok());
+    /// assert!(bloom.insert(&0111).is_ok());
+    /// assert!(bloom.insert(&0101).is_ok());
     /// assert!(bloom.insert(&0100).is_ok());
-    /// assert!(bloom.insert(&1000).is_ok());
+    /// assert!(bloom.insert(&1100).is_err());
+    /// assert!(bloom.insert(&1101).is_err());
+    /// assert!(bloom.insert(&1111).is_err());
+    /// assert!(bloom.insert(&1110).is_err());
+    /// assert!(bloom.insert(&1010).is_err());
+    /// assert!(bloom.insert(&1011).is_err());
     /// assert!(bloom.insert(&1001).is_err());
+    /// assert!(bloom.insert(&1000).is_err());
     ///
-    /// assert_eq!(bloom.len(), 5);
+    /// assert_eq!(bloom.len(), 16);
     /// ```
     pub fn insert(&mut self, key: &K) -> Result<bool, InsertError> {
         let mut hasher = self.hash_builder.build_hasher();
@@ -371,7 +395,7 @@ where
         let base = hasher.finish() as usize;
         let mut member = false;
         let cap = self.capacity;
-        let err = self.len == cap;
+        let err = self.len >= cap;
 
         for idx in self.hash_factors.iter().map(|x| x.wrapping_mul(base) % cap) {
             member &= self.data.get(idx as usize);
@@ -420,8 +444,8 @@ where
     /// ```
     /// use approximate::filters::bloom::original::Bloom;
     ///
-    /// let mut bloom = Bloom::<u16, _>::new(64, 0.001, 2).unwrap();
-    /// assert_eq!(bloom.capacity(), 4);
+    /// let mut bloom = Bloom::<u16, _>::new(64, 0.001).unwrap();
+    /// assert_eq!(bloom.capacity(), 80);
     /// assert!(bloom.insert(&0001).is_ok());
     ///
     /// assert!(bloom.is_member(&0001));
@@ -442,8 +466,21 @@ where
         member
     }
 
-    #[cfg(test)]
-    pub fn total_factors(&self) -> usize {
+    /// Return the number of hashes used by this filter
+    ///
+    /// If the user created the Bloom by supplying an explicit vector of hash
+    /// factors then this will be the length of that vector. Else, it will be
+    /// the optimal -- in the sense of maximizing capacity -- number of hashes
+    /// computed as -lg(error_bound).
+    ///
+    /// ```
+    /// use approximate::filters::bloom::original::Bloom;
+    ///
+    /// let bloom = Bloom::<u16, _>::new(8, 0.1).unwrap();
+    /// assert_eq!(bloom.capacity(), 8);
+    /// assert_eq!(bloom.total_hashes(), 4);
+    /// ```
+    pub fn total_hashes(&self) -> usize {
         self.hash_factors.len()
     }
 
@@ -537,8 +574,8 @@ mod test {
             for entry in entries {
                 bloom.insert_unchecked(&entry);
                 entries_inserted += 1;
-                assert!(bloom.total_factors() <= entries_inserted * factors_len);
-                assert!(bloom.total_factors() >= 1);
+                assert!(bloom.total_hashes() <= entries_inserted * factors_len);
+                assert!(bloom.total_hashes() >= 1);
             }
 
             TestResult::passed()
