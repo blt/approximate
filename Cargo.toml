@@ -7,6 +7,8 @@ authors = ["Brian L. Troutwine <brian@troutwine.us>"]
 bitvec    = "0.5.0"
 rand      = "0.5"
 twox-hash = "1.1.1"
+honggfuzz = { version = "0.5", optional = true }
+arbitrary = { version = "0.1", optional = true }
 
 [dev-dependencies]
 quickcheck = "0.6"
@@ -16,3 +18,12 @@ itertools = "0.7"
 [[bench]]
 name = "original_bloom"
 harness = false
+
+[features]
+default = []
+
+fuzzing = ["honggfuzz", "arbitrary"]
+
+[[bin]]
+name = "original_bloom_fuzz"
+required-features = ["fuzzing"]

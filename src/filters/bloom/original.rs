@@ -1,5 +1,18 @@
-//! The original 'method 2' bloom filter
-
+//! Dr. Burton Bloom's 'method 2' filter
+//!
+//! This implementation of Bloom's filter is from "Space/Time Trade-offs in Hash
+//! Coding with Allowable Errors", specifically the 'method 2'
+//! implementation. The filter uses k hash functions -- adapted somewhat from
+//! Bloom's original _actual_ k hash functions to a single hash function smeared
+//! around per "An Improved Construction for Counting Bloom Filters" by Bonomi
+//! et al -- to map a hashed key onto a bit array, writing at least 1 and at
+//! most k '1' bits into the array on insertion. Lookups are performed by
+//! checking the same indexes: the key is present in the filter if all bits are
+//! '1', else not.
+//!
+//! Bloom filters may possibly answer queries with a false positive. The rate at
+//! which this occurs is given, in this implementation, by the user as
+//! `error_guard`. See [`Bloom::new`] for full details.
 use bitvec::{BigEndian, BitVec};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
@@ -20,6 +33,12 @@ pub enum BuildError {
     GuardOutOfBounds,
     /// When supplying hash factors the vector must not be empty
     HashFactorsEmpty,
+    /// When supplying hash factors the factors themselves must be non-zero and
+    /// odd
+    HashFactorsZeroOrEven,
+    /// When supplying hash factors any more than u16 is nuts. Realistically
+    /// values much closer to 8 are going to be optimial.
+    TooManyHashFactors,
 }
 
 /// `InsertError` signals when a checked insertion into a Bloom goes
@@ -55,12 +74,15 @@ fn is_even(x: usize) -> bool {
 }
 
 #[inline]
-fn capacity(bytes: usize, error_bound: f64, total_hashes: u16) -> usize {
+fn capacity(bytes: usize, error_bound: f64, total_hashes: u16) -> Option<usize> {
     let bytes = bytes as f64;
     let total_hashes = f64::from(total_hashes);
     let res = -((bytes * (1.0 - error_bound.powf(1.0 / total_hashes)).ln()) / total_hashes);
-    assert!(!res.is_sign_negative());
-    res as usize
+    if res.is_sign_negative() {
+        None
+    } else {
+        Some(res as usize)
+    }
 }
 
 impl<K> Bloom<K, RandomXxHashBuilder>
@@ -91,7 +113,8 @@ where
     /// for Counting Bloom Filters" by Bonomi et al and has the advantage of
     /// requiring only a single hash per insertion/query. `total_hashes`
     /// controls how many `a` values will be constructed. See
-    /// [`new_with_hash_factors`] if you wish to supply the `a` values yourself.
+    /// [`Bloom::new_with_hash_factors`] if you wish to supply the `a` values
+    /// yourself.
     ///
     /// ## Error Conditions
     ///
@@ -116,7 +139,14 @@ where
     /// assert!(bloom.is_ok())
     /// ```
     pub fn new(bytes: usize, error_bound: f64, total_hashes: u16) -> Result<Self, BuildError> {
+        if bytes == 0 {
+            return Err(BuildError::InsufficientCapacity);
+        }
         let max_capacity = capacity(bytes, error_bound, total_hashes);
+        if max_capacity.is_none() {
+            return Err(BuildError::InsufficientCapacity);
+        }
+        let max_capacity = max_capacity.unwrap();
         if max_capacity == 0 {
             return Err(BuildError::InsufficientCapacity);
         }
@@ -141,29 +171,41 @@ where
         Self::new_with_hash_factors(bytes, error_bound, hash_factors)
     }
 
-    /// Like [`new`] but with explicit hash factors.
+    /// Like [`Bloom::new`] but with explicit hash factors.
     pub fn new_with_hash_factors(
         bytes: usize,
         error_bound: f64,
         hash_factors: Vec<usize>,
     ) -> Result<Self, BuildError> {
+        if bytes == 0 {
+            return Err(BuildError::InsufficientCapacity);
+        }
         if hash_factors.is_empty() {
             return Err(BuildError::HashFactorsEmpty);
         }
-        if !((error_bound > 0.0) || (error_bound < 1.0)) {
+        if !((error_bound > 0.0) && (error_bound < 1.0)) {
             return Err(BuildError::GuardOutOfBounds);
         }
 
         let total_hashes = hash_factors.len();
-        assert!(total_hashes <= u16::max_value() as usize);
+        if total_hashes >= (u16::max_value() as usize) {
+            return Err(BuildError::TooManyHashFactors);
+        }
         let max_capacity = capacity(bytes, error_bound, total_hashes as u16);
+        if max_capacity.is_none() {
+            return Err(BuildError::InsufficientCapacity);
+        }
+        let max_capacity = max_capacity.unwrap();
         if max_capacity == 0 {
             return Err(BuildError::InsufficientCapacity);
         }
         for fct in &hash_factors {
-            assert!(!is_even(*fct))
+            if is_even(*fct) {
+                return Err(BuildError::HashFactorsZeroOrEven);
+            }
         }
         let capacity = (total_hashes * 2) * max_capacity; // total_factors * 2 because we only pick odds
+        assert!(capacity != 0);
         let mut data = BitVec::with_capacity(max_capacity);
         for _ in 0..capacity {
             data.push(false);
@@ -186,7 +228,7 @@ where
     K: Hash + Eq,
     S: BuildHasher,
 {
-    /// Like [`new`] but with explicit hash factors and hasher.
+    /// Like [`Bloom::new`] but with explicit hash factors and hasher.
     ///
     /// The default construction of Bloom uses twox hash. Use this function if
     /// you wish to supply your own hash function.
@@ -196,20 +238,35 @@ where
         hash_factors: Vec<usize>,
         hash_builder: S,
     ) -> Result<Self, BuildError> {
+        if bytes == 0 {
+            return Err(BuildError::InsufficientCapacity);
+        }
         if hash_factors.is_empty() {
             return Err(BuildError::HashFactorsEmpty);
         }
-        if !((error_bound > 0.0) || (error_bound < 1.0)) {
+        if !((error_bound > 0.0) && (error_bound < 1.0)) {
             return Err(BuildError::GuardOutOfBounds);
         }
 
         let total_hashes = hash_factors.len();
-        assert!(total_hashes <= u16::max_value() as usize);
+        if total_hashes >= (u16::max_value() as usize) {
+            return Err(BuildError::TooManyHashFactors);
+        }
         let max_capacity = capacity(bytes, error_bound, total_hashes as u16);
+        if max_capacity.is_none() {
+            return Err(BuildError::InsufficientCapacity);
+        }
+        let max_capacity = max_capacity.unwrap();
+        if max_capacity == 0 {
+            return Err(BuildError::InsufficientCapacity);
+        }
         for fct in &hash_factors {
-            assert!(!is_even(*fct))
+            if is_even(*fct) {
+                return Err(BuildError::HashFactorsZeroOrEven);
+            }
         }
         let capacity = (total_hashes * 2) * max_capacity; // total_factors * 2 because we only pick odds
+        assert!(capacity != 0);
         let mut data = BitVec::with_capacity(max_capacity);
         for _ in 0..capacity {
             data.push(false);
@@ -265,7 +322,7 @@ where
     /// Determine if the Bloom filter is empty
     ///
     /// This function will only return true if no insertion calls have been
-    /// made. That is, if [`len`] is zero this function will return true.
+    /// made. That is, if [`Bloom::len`] is zero this function will return true.
     ///
     /// ```
     /// use approximate::filters::bloom::original::Bloom;
@@ -332,7 +389,8 @@ where
 
     /// Insert a key into the Bloom filter, return prior membership
     ///
-    /// This function acts like [`insert`] but does not check for overflow conditions.
+    /// This function acts like [`Bloom::insert`] but does not check for
+    /// overflow conditions.
     ///
     /// ```
     /// use approximate::filters::bloom::original::Bloom;

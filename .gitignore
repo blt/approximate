@@ -1,3 +1,5 @@
 /target
 **/*.rs.bk
 Cargo.lock
+hfuzz_target/
+hfuzz_workspace/
