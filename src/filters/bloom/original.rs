@@ -45,7 +45,7 @@ where
     capacity: usize,
     len: usize,
     hash_factors: Vec<usize>,
-    data: BitVec<BigEndian, u8>,
+    data: BitVec<BigEndian, u64>,
     phantom: PhantomData<K>,
 }
 

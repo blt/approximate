@@ -10,3 +10,9 @@ twox-hash = "1.1.1"
 
 [dev-dependencies]
 quickcheck = "0.6"
+criterion = "0.2"
+itertools = "0.7"
+
+[[bench]]
+name = "original_bloom"
+harness = false
