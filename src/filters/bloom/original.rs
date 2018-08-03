@@ -484,13 +484,52 @@ where
         self.hash_factors.len()
     }
 
+    /// Clear the filter
+    ///
+    /// This function resets all storage held by the filter, save the supplied
+    /// (or computed) hash functions.
+    ///
+    /// ```
+    /// use approximate::filters::bloom::original::Bloom;
+    ///
+    /// let mut bloom = Bloom::<u16, _>::new(8, 0.1).unwrap();
+    /// assert_eq!(bloom.capacity(), 8);
+    /// assert!(bloom.insert(&0001).is_ok());
+    /// assert!(bloom.insert(&0010).is_ok());
+    /// assert!(bloom.insert(&0011).is_ok());
+    /// assert!(bloom.insert(&0010).is_ok());
+    /// assert!(bloom.insert(&0110).is_ok());
+    /// assert!(bloom.insert(&0111).is_ok());
+    /// assert!(bloom.insert(&0101).is_ok());
+    /// assert!(bloom.insert(&0100).is_ok());
+    /// assert!(bloom.insert(&1100).is_err());
+    /// assert!(bloom.insert(&1101).is_err());
+    /// assert!(bloom.insert(&1111).is_err());
+    /// assert!(bloom.insert(&1110).is_err());
+    /// assert!(bloom.insert(&1010).is_err());
+    /// assert!(bloom.insert(&1011).is_err());
+    /// assert!(bloom.insert(&1001).is_err());
+    /// assert!(bloom.insert(&1000).is_err());
+    ///
+    /// assert_eq!(bloom.len(), 16);
+    /// bloom.clear();
+    ///
+    /// assert_eq!(bloom.len(), 0);
+    /// assert!(!bloom.is_member(&1010));
+    /// ```
+    pub fn clear(&mut self) -> () {
+        self.len = 0;
+        self.data.clear();
+        for _ in 0..self.capacity {
+            self.data.push(false);
+        }
+    }
+
     #[cfg(test)]
     pub fn total_ones(&self) -> usize {
         self.data.count_one()
     }
 }
-
-// - No false negatives, only false positives
 
 #[cfg(test)]
 mod test {
