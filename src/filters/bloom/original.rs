@@ -75,6 +75,8 @@ fn is_even(x: usize) -> bool {
 
 /// Calculate the number of elements to fit in `bytes` with guaranteed error
 /// bound, for supplied number of hashes.
+// TODO(blt) this result is actually for partitioned bloom filters, not
+// original. Is approximately correct.
 #[inline]
 fn capacity(bytes: usize, error_bound: f64, total_hashes: u16) -> Option<usize> {
     let bytes = bytes as f64;
@@ -88,6 +90,8 @@ fn capacity(bytes: usize, error_bound: f64, total_hashes: u16) -> Option<usize> 
 }
 
 /// Return the optimal number of hashes for the given error, per Chang et al 2005.
+// TODO(blt) this result is actually for partitioned bloom filters, not
+// original. Is approximately correct.
 #[inline]
 fn optimal_hashes(error_bound: f64) -> Option<u16> {
     if !((error_bound > 0.0) && (error_bound < 1.0)) {
