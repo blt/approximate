@@ -20,6 +20,129 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::marker::PhantomData;
 use twox_hash::RandomXxHashBuilder;
 
+/// TODO
+pub struct Builder<K, S = RandomXxHashBuilder>
+where
+    K: Hash + Eq,
+    S: BuildHasher,
+{
+    bytes: Option<usize>,           // maximum bytes to allocate, less overhead
+    bytes_strict: bool,             // do we strictly allocate bytes or maybe less
+    capacity: Option<usize>,        // estimated total elements to be stored
+    error_bound: Option<f64>,       // false positive rate
+    hash_builder: Option<S>,        // the hasher to use
+    total_hash_factors: Option<u8>, // total number of hashing factors
+    hash_factors: Option<Vec<u64>>, // explicit hash factors
+    phantom: PhantomData<K>,
+}
+
+impl<K, S> Builder<K, S>
+where
+    K: Hash + Eq,
+    S: BuildHasher,
+{
+    /// Create a new Builder
+    ///
+    /// The purpose of the builder is to allow the user to configure the Bloom
+    /// to their liking. There are a few knobs to twist on this data structure,
+    /// some imply others or allow their derivation at optimal settings.
+    pub fn new() -> Self {
+        Builder {
+            bytes: None,
+            bytes_strict: false,
+            capacity: None,
+            error_bound: None,
+            hash_builder: None,
+            total_hash_factors: None,
+            hash_factors: None,
+            phantom: PhantomData,
+        }
+    }
+
+    /// Introduce a maximum allocation limit onto Bloom
+    ///
+    /// The `bytes` parameter acts as a constraint on the maximum allowable
+    /// bytes to be allocated for the Bloom's underlying bit array. Depending on
+    /// whether the user calls [`Bloom::strict_bytes`] or not the resulting
+    /// Bloom may have less than `bytes` bytes reserved for use.
+    pub fn bytes(mut self, bytes: usize) -> Self {
+        self.bytes = Some(bytes);
+        self
+    }
+
+    /// Strictly enforce [`Bloom::bytes`] setting
+    ///
+    /// If this function is called then the `bytes` set by the user will be a
+    /// guaranteed allocation. Else, other parameters may result in some
+    /// allocation less than `bytes` being required. This parameter implies that
+    /// a call to [`Bloom::bytes`] is non-optional.
+    pub fn bytes_strict(mut self) -> Self {
+        self.bytes_strict = true;
+        self
+    }
+
+    /// Estimated capacity of Bloom
+    ///
+    /// A Bloom can only hold a finite number of distinct elements in itself
+    /// before violating the user-defined error bound on false positives. This
+    /// data structure cannot estimate the capacity based on other parameters
+    /// and, so, the user must supply an estimate.
+    ///
+    /// This is a MANDATORY call
+    pub fn capacity(mut self, capacity: usize) -> Self {
+        self.capacity = Some(capacity);
+        self
+    }
+
+    /// Set the error bound for false positives
+    ///
+    /// A Bloom filter always answers queries with some chance for false
+    /// positive responses. This parameter bounds that error, with an important
+    /// caveat. The error bound only holds so long as the user does not insert
+    /// more than [`capacity`] distinct elements into the Bloom.
+    pub fn error_bound(mut self, error_bound: f64) -> Self {
+        self.error_bound = Some(error_bound);
+        self
+    }
+
+    /// Set the hasher for Bloom
+    ///
+    /// A Bloom filter is a structure built around hashing. This implementation
+    /// uses a single hash function augmented by hashing factors per TODO
+    /// REFERENCE
+    pub fn hash_builder(mut self, hash_builder: S) -> Self {
+        self.hash_builder = Some(hash_builder);
+        self
+    }
+
+    /// Set the number of hash factors for Bloom
+    ///
+    /// Explicitly declare the number of hashing factors to use but allow the
+    /// factors to be auto-discovered. Incompatible with a call to
+    /// [`Bloom::hash_factors`].
+    pub fn total_hash_factors(mut self, total_hash_factors: u8) -> Self {
+        self.total_hash_factors = Some(total_hash_factors);
+        self
+    }
+
+    /// Set the hash factors explicitly for Bloom
+    ///
+    /// Explicitly declare the hashing factors to use in Bloom. This is
+    /// incompatible with a call to [`Bloom::total_hash_factors`]. Each hash
+    /// factor must be distinct, non-zero and odd.
+    pub fn hash_factors(mut self, hash_factors: Vec<u64>) -> Self {
+        self.hash_factors = Some(hash_factors);
+        self
+    }
+
+    /// Create a `Bloom<K, S>` from a `Builder<K, S>`
+    ///
+    /// TODO document which parameters can derive others
+    pub fn freeze(self) -> Bloom<K, S> {
+        unimplemented!();
+    }
+}
+
 /// `BuildError` signals when the construction of a Bloom has failed. There are
 /// a few toggles available to the user during construction and it's not
 /// impossible to find settings that, taken together, result in a poorly
