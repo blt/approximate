@@ -139,6 +139,18 @@ where
     ///
     /// TODO document which parameters can derive others
     pub fn freeze(self) -> Bloom<K, S> {
+        // Okay. This impl. has to be given a capacity. If given:
+        //
+        //  * error_bound: can compute bytes, total hashes
+        //  * total_hashes: can compute error bound, bytes
+        //
+        // Need to confirm this but I think it's accurate.
+        //
+        // We have problem with the hash_builder. Specifically, in the default
+        // case I want to return a RandomXxHashBuilder but that's concrete.
+
+        // let hash_builder = self.hash_builder.unwrap_or(RandomXxHashBuilder::default());
+
         unimplemented!();
     }
 }
