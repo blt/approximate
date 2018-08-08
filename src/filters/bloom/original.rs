@@ -30,16 +30,15 @@ where
     bytes_strict: bool,             // do we strictly allocate bytes or maybe less
     capacity: Option<usize>,        // estimated total elements to be stored
     error_bound: Option<f64>,       // false positive rate
-    hash_builder: Option<S>,        // the hasher to use
+    hash_builder: S,                // the hasher to use
     total_hash_factors: Option<u8>, // total number of hashing factors
     hash_factors: Option<Vec<u64>>, // explicit hash factors
     phantom: PhantomData<K>,
 }
 
-impl<K, S> Builder<K, S>
+impl<K> Builder<K, RandomXxHashBuilder>
 where
     K: Hash + Eq,
-    S: BuildHasher,
 {
     /// Create a new Builder
     ///
@@ -52,7 +51,31 @@ where
             bytes_strict: false,
             capacity: None,
             error_bound: None,
-            hash_builder: None,
+            hash_builder: RandomXxHashBuilder::default(),
+            total_hash_factors: None,
+            hash_factors: None,
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<K, S> Builder<K, S>
+where
+    K: Hash + Eq,
+    S: BuildHasher,
+{
+    /// Create a new Builder with a user-supplied hasher
+    ///
+    /// The purpose of the builder is to allow the user to configure the Bloom
+    /// to their liking. There are a few knobs to twist on this data structure,
+    /// some imply others or allow their derivation at optimal settings.
+    pub fn with_hasher(hash_builder: S) -> Self {
+        Builder {
+            bytes: None,
+            bytes_strict: false,
+            capacity: None,
+            error_bound: None,
+            hash_builder,
             total_hash_factors: None,
             hash_factors: None,
             phantom: PhantomData,
@@ -102,16 +125,6 @@ where
     /// more than [`capacity`] distinct elements into the Bloom.
     pub fn error_bound(mut self, error_bound: f64) -> Self {
         self.error_bound = Some(error_bound);
-        self
-    }
-
-    /// Set the hasher for Bloom
-    ///
-    /// A Bloom filter is a structure built around hashing. This implementation
-    /// uses a single hash function augmented by hashing factors per TODO
-    /// REFERENCE
-    pub fn hash_builder(mut self, hash_builder: S) -> Self {
-        self.hash_builder = Some(hash_builder);
         self
     }
 
