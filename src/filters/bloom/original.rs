@@ -16,23 +16,52 @@
 use bitvec::{BigEndian, BitVec};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
-use std::f64::consts::{E, LN_2};
+use std::f64::consts::LN_2;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::marker::PhantomData;
 use twox_hash::RandomXxHashBuilder;
 
-struct Parameters {
-    bits: Option<usize>, // realistically, isize::max_value() as usize
+/// oh lord
+pub struct Parameters {
+    bits: usize, // realistically, isize::max_value() as usize
+    false_positive_bound: f64,
     capacity: Option<usize>,
-    false_positive_bound: Option<f64>,
     total_hashes: Option<u8>,
 }
 
+/// Hidy hidy, let's do math in maxima.
+///
+/// We require thnat the user give us 'bits' and 'false_positive_bound'. We,
+/// then, need to compute 'capacity' and 'total_hashes' from that. Let's adjust
+/// our nomenclature:
+///
+///   * p :: false_positive_bound
+///   * m :: bits
+///   * n :: capacity
+///   * k :: total_hashes
+///
+/// Now, the formula for `p` is:
+///
+/// `eqProb: p = (1 - %e ^ ( - (k*n)/m )) ^ k$`
+///
+/// The formula for minimal `k` is
+///
+/// `eqHashes: k = (m/n)*log(2)$`
+///
+/// Substitute the formula for `k` back into the first formula:
+///
+/// `subst(eqHashes, eqProb);`
+///
+/// Hey now, we're in business. Formula for `n' and `m` are then:
+///
+/// `solve(%, n);`
+/// `solve(%, m);`
 impl Parameters {
+    /// Produce a new structure for computing parameters
     pub fn new(
-        bits: Option<usize>,
+        bits: usize,
+        false_positive_bound: f64,
         capacity: Option<usize>,
-        false_positive_bound: Option<f64>,
         total_hashes: Option<u8>,
     ) -> Self {
         Parameters {
@@ -43,89 +72,33 @@ impl Parameters {
         }
     }
 
-    pub fn bits(&self) -> Result<usize, BuildError> {
-        // where k = total_hashes
-        //       m = bits in the filter
-        //       n = number of items in the filter
-        //       p = probability of false positives
-        //
-        //     _          _
-        //     | n * ln p |
-        // m = | -------- |
-        //     | (ln 2)^2 |
-        if self.false_positive_bound.is_none() || self.capacity.is_none() {
-            return Err(BuildError::UnableToComputeByteLimit);
-        }
-        let n = self.capacity.unwrap() as f64;
-        let p = self.false_positive_bound.unwrap() as f64;
-
-        let m: f64 = ((n * p.ln()) / (LN_2 * LN_2)).ceil();
-        let bits: usize = m as usize;
-
-        if bits == 0 {
-            Err(BuildError::InsufficientCapacity)
-        } else {
-            Ok(bits)
-        }
-    }
-
+    /// TODO
     pub fn capacity(&self) -> Result<usize, BuildError> {
         // where k = total_hashes
         //       m = bits in the filter
         //       n = number of items in the filter
         //       p = probability of false positives
-        // and
-        //       p = (1 - (1-(1/m))^(k*n))^k
-        // then
-        //                  (1 / k)
-        //     ln ( 1 - p ^         )
-        // n = ----------------------
-        //                 m - 1
-        //        k * ln ( ----- )
-        //                   m
-        if self.false_positive_bound.is_none() || self.total_hashes.is_none() || self.bits.is_none()
-        {
-            return Err(BuildError::UnableToComputeCapacity);
-        }
-        let p = self.false_positive_bound.unwrap();
-        let k = self.total_hashes.unwrap() as f64;
-        let m = self.bits.unwrap() as f64;
+        //
+        // n = - ( log(2)^2 * m ) / log(p)
+        let p = self.false_positive_bound;
+        let m = self.bits as f64;
 
-        let num = (1.0 - p.powf(1.0 / k)).ln();
-        let dem = k * ((m - 1.0) / m).ln();
-        let n = (num / dem).ceil() as usize;
+        let num = LN_2 * LN_2 * m;
+        let dem = -p.ln();
+        let n = (num / dem).floor() as usize;
         if n == 0 {
             Err(BuildError::InsufficientCapacity)
         } else {
+            if let Some(capacity_demand) = self.capacity {
+                if n < capacity_demand {
+                    return Err(BuildError::CapacityBoundViolation);
+                }
+            }
             Ok(n)
         }
     }
 
-    pub fn false_positive_bound(&self) -> Result<f64, BuildError> {
-        // where k = total_hashes
-        //       m = bits in the filter
-        //       n = number of items in the filter
-        //       p = probability of false positives
-        //
-        //      /                      \ k
-        //     |         - (k * n) / m |
-        // p = | 1 - e ^               |
-        //     |                       |
-        //     \                       /
-        if self.capacity.is_none() || self.total_hashes.is_none() || self.bits.is_none() {
-            return Err(BuildError::UnableToComputeErrorBound);
-        }
-        let k = self.total_hashes.unwrap() as f64;
-        let m = self.bits.unwrap() as f64;
-        let n = self.capacity.unwrap() as f64;
-        let p = (1.0 - E.powf(-((k * n) / m))).powf(k);
-        if !((p > 0.0) && (p < 1.0)) {
-            Err(BuildError::GuardOutOfBounds)
-        } else {
-            Ok(p)
-        }
-    }
-
+    /// TODO
     pub fn total_hashes(&self) -> Result<u8, BuildError> {
         // where k = total_hashes
         //       m = bits in the filter
@@ -135,17 +108,19 @@ impl Parameters {
         //              m * ln(2)
         //  k = round ( --------- )
         //                  n
-        if self.bits.is_none() || self.capacity.is_none() {
-            return Err(BuildError::UnableToComputeTotalHashes);
-        }
-        let n = self.capacity.unwrap() as f64;
-        let m = self.bits.unwrap() as f64;
-        let k = ((m * LN_2) / n).round();
-        let total_hashes = k as u8;
-        if total_hashes == 0 {
+        let n = self.capacity()? as f64;
+        let m = self.bits as f64;
+        let k = ((m * LN_2) / n).round() as u8;
+        if k == 0 {
             Err(BuildError::HashFactorsEmpty)
         } else {
-            Ok(total_hashes)
+            if let Some(total_hashes) = self.total_hashes {
+                if k > total_hashes {
+                    println!("K: {}", k);
+                    return Err(BuildError::HashFactorBoundViolation(k));
+                }
+            }
+            Ok(k)
         }
     }
 }
@@ -156,12 +131,12 @@ where
     K: Hash + Eq,
     S: BuildHasher,
 {
-    bits: Option<usize>,               // maximum bits to allocate, less overhead
-    capacity: Option<usize>,           // estimated total elements to be stored
-    false_positive_bound: Option<f64>, // false positive rate
-    hash_builder: S,                   // the hasher to use
-    total_hash_factors: Option<u8>,    // total number of hashing factors
-    hash_factors: Option<Vec<u64>>,    // explicit hash factors
+    bits: usize,                    // maximum bits to allocate, less overhead
+    capacity: Option<usize>,        // estimated total elements to be stored
+    false_positive_bound: f64,      // false positive rate
+    hash_builder: S,                // the hasher to use
+    total_hash_factors: Option<u8>, // total number of hashing factors
+    hash_factors: Option<Vec<u64>>, // explicit hash factors
     phantom: PhantomData<K>,
 }
 
@@ -174,11 +149,11 @@ where
     /// The purpose of the builder is to allow the user to configure the Bloom
     /// to their liking. There are a few knobs to twist on this data structure,
     /// some imply others or allow their derivation at optimal settings.
-    pub fn new() -> Self {
+    pub fn new(bits: usize, false_positive_bound: f64) -> Self {
         Builder {
-            bits: None,
+            bits,
             capacity: None,
-            false_positive_bound: None,
+            false_positive_bound,
             hash_builder: RandomXxHashBuilder::default(),
             total_hash_factors: None,
             hash_factors: None,
@@ -197,27 +172,24 @@ where
     /// The purpose of the builder is to allow the user to configure the Bloom
     /// to their liking. There are a few knobs to twist on this data structure,
     /// some imply others or allow their derivation at optimal settings.
-    pub fn with_hasher(hash_builder: S) -> Self {
+    ///
+    /// The `bits` argument defines the total number of bits to be allocated for
+    /// the Bloom's underlying bit array.
+    ///
+    /// A Bloom filter always answers queries with some chance for false
+    /// positive responses. This parameter bounds that error, with an important
+    /// caveat. The error bound only holds so long as the user does not insert
+    /// more than [`capacity`] distinct elements into the Bloom.
+    pub fn with_hasher(bits: usize, false_positive_bound: f64, hash_builder: S) -> Self {
         Builder {
-            bits: None,
+            bits,
             capacity: None,
-            false_positive_bound: None,
+            false_positive_bound,
             hash_builder,
             total_hash_factors: None,
             hash_factors: None,
             phantom: PhantomData,
         }
-    }
-
-    /// Introduce a maximum allocation limit onto Bloom
-    ///
-    /// The `bits` parameter acts as a constraint on the maximum allowable
-    /// bits to be allocated for the Bloom's underlying bit array. Depending on
-    /// whether the user calls [`Bloom::strict_bits`] or not the resulting
-    /// Bloom may have less than `bits` bits reserved for use.
-    pub fn bits(mut self, bits: usize) -> Self {
-        self.bits = Some(bits);
-        self
     }
 
     /// Estimated capacity of Bloom
@@ -226,21 +198,8 @@ where
     /// before violating the user-defined error bound on false positives. This
     /// data structure cannot estimate the capacity based on other parameters
     /// and, so, the user must supply an estimate.
-    ///
-    /// This is a MANDATORY call
     pub fn capacity(mut self, capacity: usize) -> Self {
         self.capacity = Some(capacity);
-        self
-    }
-
-    /// Set the error bound for false positives
-    ///
-    /// A Bloom filter always answers queries with some chance for false
-    /// positive responses. This parameter bounds that error, with an important
-    /// caveat. The error bound only holds so long as the user does not insert
-    /// more than [`capacity`] distinct elements into the Bloom.
-    pub fn false_positive_bound(mut self, false_positive_bound: f64) -> Self {
-        self.false_positive_bound = Some(false_positive_bound);
         self
     }
 
@@ -307,10 +266,10 @@ where
     /// ```
     /// use approximate::filters::bloom::original::{Builder, Bloom};
     ///
-    /// let too_small_bloom: Result<Bloom<u16, _>, _> = Builder::new().false_positive_bound(0.0001).bits(1).freeze();
+    /// let too_small_bloom: Result<Bloom<u16, _>, _> = Builder::new(1, 0.0001).freeze();
     /// assert!(too_small_bloom.is_err());
     ///
-    /// let bloom: Result<Bloom<u16, _>, _> = Builder::new().false_positive_bound(0.0001).bits(100_000).freeze();
+    /// let bloom: Result<Bloom<u16, _>, _> = Builder::new(100_000, 0.0001).freeze();
     /// assert!(bloom.is_ok())
     /// ```
     pub fn freeze(self) -> Result<Bloom<K, S>, BuildError> {
@@ -329,52 +288,14 @@ where
         };
         let parameters = Parameters::new(
             self.bits,
-            self.capacity,
             self.false_positive_bound,
+            self.capacity,
             total_hashes,
         );
-        let bits;
-        let capacity;
-        let false_positive_bound;
-        let total_hashes;
-        match (
-            self.bits,
-            self.false_positive_bound,
-            self.total_hash_factors,
-            self.capacity,
-        ) {
-            (Some(_), Some(_), Some(_), None) => {
-                // compute 'capacity'
-                bits = self.bits.unwrap();
-                capacity = parameters.capacity()?;
-                false_positive_bound = self.false_positive_bound.unwrap();
-                total_hashes = self.total_hash_factors.unwrap();
-            }
-            (None, Some(_), Some(_), Some(_)) => {
-                // compute 'bits'
-                bits = parameters.bits()?;
-                capacity = self.capacity.unwrap();
-                false_positive_bound = self.false_positive_bound.unwrap();
-                total_hashes = self.total_hash_factors.unwrap();
-            }
-            (Some(_), None, Some(_), Some(_)) => {
-                // compute 'false_positive_bound'
-                bits = self.bits.unwrap();
-                capacity = self.capacity.unwrap();
-                false_positive_bound = parameters.false_positive_bound()?;
-                total_hashes = self.total_hash_factors.unwrap();
-            }
-            (Some(_), None, None, Some(_)) | (Some(_), Some(_), None, Some(_)) => {
-                // compute 'total_hashes'
-                bits = self.bits.unwrap();
-                capacity = self.capacity.unwrap();
-                false_positive_bound = self.false_positive_bound.unwrap_or(0.01);
-                total_hashes = parameters.total_hashes()?;
-            }
-            _ => {
-                return Err(BuildError::InsufficientParameters);
-            }
-        }
+        let bits = self.bits;
+        let false_positive_bound = self.false_positive_bound;
+        let capacity = parameters.capacity()?;
+        let total_hashes = parameters.total_hashes()?;
         if !((false_positive_bound > 0.0) && (false_positive_bound < 1.0)) {
             return Err(BuildError::GuardOutOfBounds);
         }
@@ -438,7 +359,7 @@ where
 /// a few toggles available to the user during construction and it's not
 /// impossible to find settings that, taken together, result in a poorly
 /// configured Bloom.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum BuildError {
     /// If 'bits' is not supplied then 'false_positive_bound', 'total_hashes' and
     /// 'capacity' must be.
@@ -465,6 +386,9 @@ pub enum BuildError {
     /// Not enough underlying bits have been allocated to satisfy the error
     /// bound for the number of hash functions demanded.
     InsufficientCapacity,
+    /// When the computed capacity is greater than the bound placed on same by
+    /// the user
+    CapacityBoundViolation,
     /// Error guard out of bounds, must be > 0.0 and < 1.0
     GuardOutOfBounds,
     /// When supplying hash factors the vector must not be empty
@@ -472,6 +396,9 @@ pub enum BuildError {
     /// When supplying hash factors the factors themselves must be non-zero and
     /// odd
     HashFactorsZeroOrEven,
+    /// When the computed number of hash factors is greater than the bound
+    /// placed on same by the user
+    HashFactorBoundViolation(u8),
     /// When supplying hash factors any more than u16 is nuts. Realistically
     /// values much closer to 8 are going to be optimial.
     TooManyHashFactors,
@@ -523,12 +450,10 @@ where
     /// ```
     /// use approximate::filters::bloom::original::{Bloom, Builder};
     ///
-    /// let bloom: Bloom<u16, _> = Builder::new()
-    ///     .bits(32_000)
-    ///     .false_positive_bound(0.001)
+    /// let bloom: Bloom<u16, _> = Builder::new(32_000, 0.001)
     ///     .total_hash_factors(12)
     ///     .freeze().unwrap();
-    /// assert_eq!(2204, bloom.capacity());
+    /// assert_eq!(2225, bloom.capacity());
     /// ```
     pub fn capacity(&self) -> usize {
         self.capacity
@@ -542,9 +467,7 @@ where
     /// ```
     /// use approximate::filters::bloom::original::{Bloom, Builder};
     ///
-    /// let mut bloom: Bloom<u16, _> = Builder::new()
-    ///         .bits(32_000)
-    ///         .false_positive_bound(0.1)
+    /// let mut bloom: Bloom<u16, _> = Builder::new(32_000, 0.1)
     ///         .total_hash_factors(32)
     ///         .freeze().unwrap();
     /// assert_eq!(bloom.len(), 0);
@@ -566,9 +489,7 @@ where
     /// ```
     /// use approximate::filters::bloom::original::{Builder, Bloom};
     ///
-    /// let mut bloom: Bloom<u16, _> = Builder::new()
-    ///         .bits(32_000)
-    ///         .false_positive_bound(0.1)
+    /// let mut bloom: Bloom<u16, _> = Builder::new(32_000, 0.1)
     ///         .total_hash_factors(32)
     ///         .freeze().unwrap();
     /// assert_eq!(bloom.len(), 0);
@@ -598,11 +519,10 @@ where
     /// ```
     /// use approximate::filters::bloom::original::{Builder, Bloom};
     ///
-    /// let mut bloom: Bloom<u16, _> = Builder::new()
-    ///         .bits(38)
-    ///         .false_positive_bound(0.1)
+    /// let mut bloom: Bloom<u16, _> = Builder::new(38, 0.1)
+    ///         .hash_factors(vec![1,3])
     ///         .freeze().unwrap();
-    /// assert_eq!(bloom.capacity(), 8);
+    /// assert_eq!(bloom.capacity(), 7);
     /// assert!(bloom.insert(&0001).is_ok());
     /// assert!(bloom.insert(&0010).is_ok());
     /// assert!(bloom.insert(&0011).is_ok());
@@ -652,9 +572,7 @@ where
     /// ```
     /// use approximate::filters::bloom::original::{Builder, Bloom};
     ///
-    /// let mut bloom: Bloom<u16, _> = Builder::new()
-    ///         .bits(64)
-    ///         .false_positive_bound(0.001)
+    /// let mut bloom: Bloom<u16, _> = Builder::new(64, 0.001)
     ///         .hash_factors(vec![1,3])
     ///         .freeze().unwrap();
     /// assert_eq!(bloom.capacity(), 4);
@@ -679,10 +597,10 @@ where
     /// but may return true for a key that was not previously inserted.
     ///
     /// ```
-    /// use approximate::filters::bloom::original::Bloom;
+    /// use approximate::filters::bloom::original::{Bloom, Builder};
     ///
-    /// let mut bloom = Bloom::<u16, _>::new(64, 0.001).unwrap();
-    /// assert_eq!(bloom.capacity(), 80);
+    /// let mut bloom: Bloom<u16, _> = Builder::new(64, 0.001).freeze().unwrap();
+    /// assert_eq!(bloom.capacity(), 4);
     /// assert!(bloom.insert(&0001).is_ok());
     ///
     /// assert!(bloom.is_member(&0001));
@@ -713,13 +631,11 @@ where
     /// ```
     /// use approximate::filters::bloom::original::{Builder, Bloom};
     ///
-    /// let mut bloom: Bloom<u16, _> = Builder::new()
-    ///         .bits(1024)
-    ///         .false_positive_bound(0.1)
+    /// let mut bloom: Bloom<u16, _> = Builder::new(1024, 0.1)
     ///         .total_hash_factors(4)
     ///         .freeze().unwrap();
-    /// assert_eq!(bloom.capacity(), 212);
-    /// assert_eq!(bloom.total_hashes(), 4);
+    /// assert_eq!(bloom.capacity(), 213);
+    /// assert_eq!(bloom.total_hashes(), 3);
     /// ```
     pub fn total_hashes(&self) -> usize {
         self.hash_factors.len()
@@ -733,13 +649,11 @@ where
     /// ```
     /// use approximate::filters::bloom::original::{Builder, Bloom};
     ///
-    /// let mut bloom: Bloom<u16, _> = Builder::new()
-    ///         .bits(38)
-    ///         .false_positive_bound(0.1)
-    ///         .total_hash_factors(2)
+    /// let mut bloom: Bloom<u16, _> = Builder::new(38, 0.1)
+    ///         .total_hash_factors(4)
     ///         .freeze().unwrap();
     ///
-    /// assert_eq!(bloom.capacity(), 8);
+    /// assert_eq!(bloom.capacity(), 7);
     /// assert!(bloom.insert(&0001).is_ok());
     /// assert!(bloom.insert(&0010).is_ok());
     /// assert!(bloom.insert(&0011).is_ok());
@@ -747,7 +661,7 @@ where
     /// assert!(bloom.insert(&0110).is_ok());
     /// assert!(bloom.insert(&0111).is_ok());
     /// assert!(bloom.insert(&0101).is_ok());
-    /// assert!(bloom.insert(&0100).is_ok());
+    /// assert!(bloom.insert(&0100).is_err());
     /// assert!(bloom.insert(&1100).is_err());
     /// assert!(bloom.insert(&1101).is_err());
     /// assert!(bloom.insert(&1111).is_err());
@@ -782,6 +696,43 @@ mod test {
     use super::*;
     use quickcheck::{QuickCheck, TestResult};
 
+    mod parameters {
+        use super::*;
+
+        #[test]
+        pub fn hash_factor_bound_violation() {
+            for err in &[0.1] {
+                for bits in &[38] {
+                    let p = Parameters::new(*bits, *err, None, Some(4));
+                    assert_eq!(Ok(222), p.total_hashes());
+                    assert_eq!(
+                        Ok(7),
+                        p.capacity(),
+                        "Expected InsufficientCapacity for bits {}, error {}",
+                        bits,
+                        err
+                    );
+                }
+            }
+        }
+
+        #[test]
+        pub fn small_bits_insufficient_capacity() {
+            for err in &[0.0001, 0.00001] {
+                for bits in &[1, 2, 4, 8, 16] {
+                    let p = Parameters::new(*bits, *err, None, None);
+                    assert_eq!(
+                        Err(BuildError::InsufficientCapacity),
+                        p.capacity(),
+                        "Expected InsufficientCapacity for bits {}, error {}",
+                        bits,
+                        err
+                    );
+                }
+            }
+        }
+    }
+
     // Here we demonstrate that we can never observe a false negative result
     // from is_member.
     #[test]
@@ -803,9 +754,7 @@ mod test {
             if bits == 0 || (false_positive_bound <= 0.0) || (false_positive_bound >= 1.0) {
                 return TestResult::discard();
             }
-            let bloom = Builder::new()
-                .bits(bits)
-                .false_positive_bound(false_positive_bound)
+            let bloom = Builder::new(bits, false_positive_bound)
                 .hash_factors(factors)
                 .freeze();
             if bloom.is_err() {
@@ -854,9 +803,7 @@ mod test {
             if bits == 0 || (false_positive_bound <= 0.0) || (false_positive_bound >= 1.0) {
                 return TestResult::discard();
             }
-            let bloom = Builder::new()
-                .bits(bits)
-                .false_positive_bound(false_positive_bound)
+            let bloom = Builder::new(bits, false_positive_bound)
                 .hash_factors(factors)
                 .freeze();
             if bloom.is_err() {
@@ -897,9 +844,7 @@ mod test {
             if bits == 0 || (false_positive_bound <= 0.0) || (false_positive_bound >= 1.0) {
                 return TestResult::discard();
             }
-            let bloom = Builder::new()
-                .bits(bits)
-                .false_positive_bound(false_positive_bound)
+            let bloom = Builder::new(bits, false_positive_bound)
                 .hash_factors(factors)
                 .freeze();
             if bloom.is_err() {
@@ -937,9 +882,7 @@ mod test {
             if bits == 0 || (false_positive_bound <= 0.0) || (false_positive_bound >= 1.0) {
                 return TestResult::discard();
             }
-            let bloom = Builder::new()
-                .bits(bits)
-                .false_positive_bound(false_positive_bound)
+            let bloom = Builder::new(bits, false_positive_bound)
                 .hash_factors(factors)
                 .freeze();
             if bloom.is_err() {
